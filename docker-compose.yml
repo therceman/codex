@@ -11,9 +11,11 @@ services:
       - cargo-registry:/home/ubuntu/.cargo/registry
       - cargo-git:/home/ubuntu/.cargo/git
       - rustup-home:/home/ubuntu/.rustup
+    ports:
+      - "4521:4521"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: ["/bin/bash"]
+    command: ["sleep", "infinity"]
 
 volumes:
   cargo-registry:

@@ -5702,6 +5702,10 @@ impl ChatWidget {
                 name: "Join shared session".to_string(),
                 actions: vec![Box::new(|tx| tx.send(AppEvent::JoinShareSession))],
                 dismiss_on_select: true,
+                is_disabled: self.is_shared_mode(),
+                disabled_reason: self
+                    .is_shared_mode()
+                    .then_some("Stop sharing before joining another session.".to_string()),
                 ..Default::default()
             },
             SelectionItem {
@@ -5800,13 +5804,7 @@ impl ChatWidget {
         } else {
             format!("Sharing started for thread {thread_id}.")
         };
-        let hint = Some(format!(
-            "Use: codex share post{} --thread {thread_id} --prompt \"...\"",
-            self.share_server_endpoint()
-                .map(|endpoint| format!(" --server {endpoint}"))
-                .unwrap_or_default()
-        ));
-        self.add_info_message(message, hint);
+        self.add_info_message(message, None);
         self.request_redraw();
     }
 

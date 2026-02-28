@@ -120,7 +120,7 @@ const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 /// Smooth-mode streaming drains one line per tick, so this interval controls
 /// perceived typing speed for non-backlogged output.
 const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
-const DEFAULT_SHARE_SERVER_ENDPOINT: &str = "ws://127.0.0.1:4521";
+const DEFAULT_SHARE_SERVER_ENDPOINT: &str = "ws://0.0.0.0:4521";
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
