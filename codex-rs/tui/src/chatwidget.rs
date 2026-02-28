@@ -5727,6 +5727,10 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_share_help_popup(&mut self) {
+        let server_arg = self
+            .share_server_endpoint()
+            .map(|endpoint| format!(" --server {endpoint}"))
+            .unwrap_or_default();
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Help / About sharing".bold()));
         header.push(Line::from(
@@ -5744,13 +5748,19 @@ impl ChatWidget {
         header.push(Line::from(""));
         header.push(Line::from("Share CLI examples:"));
         header.push(Line::from(
-            "codex share post --thread <thread_id> --prompt \"...\"".cyan(),
+            format!("codex share post{server_arg} --thread <thread_id> --prompt \"...\"").cyan(),
         ));
         header.push(Line::from(
-            "codex share tail --thread <thread_id> --from <event_id|timestamp>".cyan(),
+            format!(
+                "codex share tail{server_arg} --thread <thread_id> --from <event_id|timestamp>"
+            )
+            .cyan(),
         ));
         header.push(Line::from(
-            "codex share get --thread <thread_id> --from <event_id|timestamp> --limit <N>".cyan(),
+            format!(
+                "codex share get{server_arg} --thread <thread_id> --from <event_id|timestamp> --limit <N>"
+            )
+            .cyan(),
         ));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
@@ -5781,6 +5791,18 @@ impl ChatWidget {
         if self.shared_thread_id.is_none() {
             self.shared_thread_id = Some(thread_id);
         }
+        let message = if let Some(endpoint) = self.share_server_endpoint() {
+            format!("Sharing started on {endpoint} (thread {thread_id}).")
+        } else {
+            format!("Sharing started for thread {thread_id}.")
+        };
+        let hint = Some(format!(
+            "Use: codex share post{} --thread {thread_id} --prompt \"...\"",
+            self.share_server_endpoint()
+                .map(|endpoint| format!(" --server {endpoint}"))
+                .unwrap_or_default()
+        ));
+        self.add_info_message(message, hint);
         self.request_redraw();
     }
 
@@ -5840,10 +5862,10 @@ impl ChatWidget {
             .map(|id| id.to_string())
             .unwrap_or_else(|| "(not available yet)".to_string());
         header.push(Line::from(format!("Thread: {thread}")));
-        if let Some(proxy) = self.session_network_proxy.as_ref() {
-            header.push(Line::from(format!("Server: {}", proxy.admin_addr)));
+        if let Some(endpoint) = self.share_server_endpoint() {
+            header.push(Line::from(format!("Server: {endpoint}")));
         } else {
-            header.push(Line::from("Server: local thread manager"));
+            header.push(Line::from("Server: (not available yet)"));
         }
         let turn_state = if self.bottom_pane.is_task_running() {
             "running"
@@ -5852,6 +5874,12 @@ impl ChatWidget {
         };
         header.push(Line::from(format!("Turn: {turn_state}")));
         header
+    }
+
+    fn share_server_endpoint(&self) -> Option<&str> {
+        self.session_network_proxy
+            .as_ref()
+            .map(|proxy| proxy.admin_addr.as_str())
     }
 
     fn model_selection_actions(
