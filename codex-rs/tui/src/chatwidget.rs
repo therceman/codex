@@ -5733,7 +5733,7 @@ impl ChatWidget {
             "Shared mode uses a shared thread in app-server.".dim(),
         ));
         header.push(Line::from(
-            "codex drive submits a turn to the thread, not to a specific TUI process.".dim(),
+            "codex share post submits a turn to the thread, not to a specific TUI process.".dim(),
         ));
         header.push(Line::from(
             "All attached TUI clients observe the same events and outputs.".dim(),
@@ -5742,9 +5742,15 @@ impl ChatWidget {
             "Only one active turn can run per shared thread.".dim(),
         ));
         header.push(Line::from(""));
-        header.push(Line::from("Drive usage example:"));
+        header.push(Line::from("Share CLI examples:"));
         header.push(Line::from(
-            "codex drive --thread <thread_id> --prompt \"...\"".cyan(),
+            "codex share post --thread <thread_id> --prompt \"...\"".cyan(),
+        ));
+        header.push(Line::from(
+            "codex share tail --thread <thread_id> --from <event_id|timestamp>".cyan(),
+        ));
+        header.push(Line::from(
+            "codex share get --thread <thread_id> --from <event_id|timestamp> --limit <N>".cyan(),
         ));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
@@ -5766,17 +5772,41 @@ impl ChatWidget {
             return;
         }
 
+        let Some(thread_id) = self.thread_id else {
+            self.add_error_message(
+                "Cannot start sharing before session initialization is complete.".to_string(),
+            );
+            return;
+        };
         if self.shared_thread_id.is_none() {
-            self.shared_thread_id = self.thread_id;
+            self.shared_thread_id = Some(thread_id);
         }
         self.request_redraw();
     }
 
-    pub(crate) fn join_share_session(&mut self) {
-        self.add_info_message(
-            "Join shared session by thread id is planned for the next phase.".to_string(),
-            Some("Phase 1 only provides shared-mode UX shell.".to_string()),
+    pub(crate) fn open_join_share_prompt(&mut self) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new(
+            "Join shared session".to_string(),
+            "Enter a thread id and press Enter".to_string(),
+            None,
+            Box::new(move |thread_id_raw: String| {
+                let trimmed = thread_id_raw.trim();
+                if trimmed.is_empty() {
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event("Thread id cannot be empty.".to_string()),
+                    )));
+                    return;
+                }
+                match ThreadId::from_string(trimmed) {
+                    Ok(thread_id) => tx.send(AppEvent::JoinShareSessionById(thread_id)),
+                    Err(_) => tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!("Invalid thread id: {trimmed}")),
+                    ))),
+                }
+            }),
         );
+        self.bottom_pane.show_view(Box::new(view));
     }
 
     pub(crate) fn stop_share_session(&mut self) {
@@ -5810,7 +5840,11 @@ impl ChatWidget {
             .map(|id| id.to_string())
             .unwrap_or_else(|| "(not available yet)".to_string());
         header.push(Line::from(format!("Thread: {thread}")));
-        header.push(Line::from("Server: local app-server (phase 2 wiring)"));
+        if let Some(proxy) = self.session_network_proxy.as_ref() {
+            header.push(Line::from(format!("Server: {}", proxy.admin_addr)));
+        } else {
+            header.push(Line::from("Server: local thread manager"));
+        }
         let turn_state = if self.bottom_pane.is_task_running() {
             "running"
         } else {

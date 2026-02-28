@@ -62,6 +62,8 @@ Optional:
 - Start sharing:
   - ensure app-server (spawn local daemon if missing)
   - create/resume thread and store `shared_thread_id`
+  - show explicit endpoint for sharing (`Server: <host>:<port>`) and `thread_id`
+  - print/share ready commands with `--server <endpoint>` for `post/tail/get`
 - Join sharing:
   - prompt for thread id
   - attach current TUI session to that thread

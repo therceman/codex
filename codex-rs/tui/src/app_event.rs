@@ -147,6 +147,7 @@ pub(crate) enum AppEvent {
     /// Share-mode menu actions.
     StartShareSession,
     JoinShareSession,
+    JoinShareSessionById(ThreadId),
     StopShareSession,
     OpenShareHelp,
 

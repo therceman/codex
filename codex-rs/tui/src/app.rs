@@ -1995,7 +1995,11 @@ impl App {
                 self.chat_widget.start_share_session();
             }
             AppEvent::JoinShareSession => {
-                self.chat_widget.join_share_session();
+                self.chat_widget.open_join_share_prompt();
+            }
+            AppEvent::JoinShareSessionById(thread_id) => {
+                self.select_agent_thread(tui, thread_id).await?;
+                self.chat_widget.start_share_session();
             }
             AppEvent::StopShareSession => {
                 self.chat_widget.stop_share_session();

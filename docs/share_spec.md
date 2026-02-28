@@ -70,6 +70,10 @@ Wire shared-mode lifecycle to app-server.
 - Create/resume thread and bind TUI to it.
 - Implement "Join shared session" by thread id.
 - Implement "Stop sharing" transition back to LOCAL.
+- After "Start sharing", show explicit endpoint details:
+  - `Server: <host>:<port>`
+  - `Thread: <thread_id>`
+  - ready examples with `--server <endpoint>` for `share post/tail/get`
 
 Deliverable: TUI can enter/leave shared mode and join existing shared sessions.
 
