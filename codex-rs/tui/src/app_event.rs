@@ -144,6 +144,11 @@ pub(crate) enum AppEvent {
     OpenUrlInBrowser {
         url: String,
     },
+    /// Share-mode menu actions.
+    StartShareSession,
+    JoinShareSession,
+    StopShareSession,
+    OpenShareHelp,
 
     /// Refresh app connector state and mention bindings.
     RefreshConnectors {

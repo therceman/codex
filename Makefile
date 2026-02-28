@@ -6,13 +6,16 @@ DOCKER_SERVICE ?= codex-dev
 COMPOSE_BAKE ?= true
 RUN_DIR ?= /workspace/codex/.cache/codex-playground
 
-.PHONY: help setup test build run test_and_run shell
+.PHONY: help setup format test test_cli test_tui build run test_and_run shell
 .SILENT:
 
 help:
 	@echo "Targets:"
 	@echo "  make setup           Build Docker image and warm Rust deps once"
-	@echo "  make test            Run codex-cli tests in Docker"
+	@echo "  make format          Run Rust formatter in Docker"
+	@echo "  make test_cli        Run codex-cli tests in Docker"
+	@echo "  make test_tui        Run codex-tui tests in Docker"
+	@echo "  make test            Run full test suite (codex-cli + codex-tui) in Docker"
 	@echo "  make build           Build Codex in Docker (no host export)"
 	@echo "  make run             Build, then run Codex in Docker (supports RUN_DIR='...')"
 	@echo "  make test_and_run    Test, then build and run Codex (supports RUN_DIR='...')"
@@ -39,7 +42,40 @@ setup:
 	fi; \
 	rm -f $$tmp
 
+format:
+	start_s=$$(date +%s); \
+	tmp=$$(mktemp); \
+	if $(DOCKER_COMPOSE) run --rm $(DOCKER_SERVICE) /bin/bash -lc 'set -euo pipefail; \
+		cd /workspace/codex/codex-rs; \
+		just fmt' >$$tmp 2>&1; then \
+		end_s=$$(date +%s); \
+		secs=$$(awk "BEGIN { printf \"%.2f\", $$end_s-$$start_s }"); \
+		echo "Format: OK ($${secs}s)"; \
+	else \
+		cat $$tmp; \
+		rm -f $$tmp; \
+		exit 1; \
+	fi; \
+	rm -f $$tmp
+
 test:
+	start_s=$$(date +%s); \
+	tmp=$$(mktemp); \
+	if $(DOCKER_COMPOSE) run --rm $(DOCKER_SERVICE) /bin/bash -lc 'set -euo pipefail; \
+		cd /workspace/codex/codex-rs; \
+		cargo test -p codex-cli; \
+		cargo test -p codex-tui' >$$tmp 2>&1; then \
+		end_s=$$(date +%s); \
+		secs=$$(awk "BEGIN { printf \"%.2f\", $$end_s-$$start_s }"); \
+		echo "Test: OK ($${secs}s)"; \
+	else \
+		cat $$tmp; \
+		rm -f $$tmp; \
+		exit 1; \
+	fi; \
+	rm -f $$tmp
+
+test_cli:
 	start_s=$$(date +%s); \
 	tmp=$$(mktemp); \
 	if $(DOCKER_COMPOSE) run --rm $(DOCKER_SERVICE) /bin/bash -lc 'set -euo pipefail; \
@@ -47,7 +83,23 @@ test:
 		cargo test -p codex-cli' >$$tmp 2>&1; then \
 		end_s=$$(date +%s); \
 		secs=$$(awk "BEGIN { printf \"%.2f\", $$end_s-$$start_s }"); \
-		echo "Test: OK ($${secs}s)"; \
+		echo "Test CLI: OK ($${secs}s)"; \
+	else \
+		cat $$tmp; \
+		rm -f $$tmp; \
+		exit 1; \
+	fi; \
+	rm -f $$tmp
+
+test_tui:
+	start_s=$$(date +%s); \
+	tmp=$$(mktemp); \
+	if $(DOCKER_COMPOSE) run --rm $(DOCKER_SERVICE) /bin/bash -lc 'set -euo pipefail; \
+		cd /workspace/codex/codex-rs; \
+		cargo test -p codex-tui' >$$tmp 2>&1; then \
+		end_s=$$(date +%s); \
+		secs=$$(awk "BEGIN { printf \"%.2f\", $$end_s-$$start_s }"); \
+		echo "Test TUI: OK ($${secs}s)"; \
 	else \
 		cat $$tmp; \
 		rm -f $$tmp; \

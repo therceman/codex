@@ -166,6 +166,7 @@ const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
 const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
+const SHARE_SELECTION_VIEW_ID: &str = "share-selection";
 
 /// Choose the keybinding used to edit the most-recently queued message.
 ///
@@ -598,6 +599,7 @@ pub(crate) struct ChatWidget {
     // Set when commentary output completes; once stream queues go idle we restore the status row.
     pending_status_indicator_restore: bool,
     thread_id: Option<ThreadId>,
+    shared_thread_id: Option<ThreadId>,
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
@@ -2847,6 +2849,7 @@ impl ChatWidget {
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
+            shared_thread_id: None,
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
@@ -3024,6 +3027,7 @@ impl ChatWidget {
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
+            shared_thread_id: None,
             thread_name: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
@@ -3190,6 +3194,7 @@ impl ChatWidget {
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
+            shared_thread_id: None,
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
@@ -3569,6 +3574,9 @@ impl ChatWidget {
                 } else {
                     self.add_info_message("Plan mode unavailable right now.".to_string(), None);
                 }
+            }
+            SlashCommand::Share => {
+                self.open_share_popup();
             }
             SlashCommand::Collab => {
                 if !self.collaboration_modes_enabled() {
@@ -5672,6 +5680,144 @@ impl ChatWidget {
             items,
             ..Default::default()
         });
+    }
+
+    pub(crate) fn open_share_popup(&mut self) {
+        let items = vec![
+            SelectionItem {
+                name: "Start sharing this session".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::StartShareSession))],
+                dismiss_on_select: true,
+                is_disabled: self.is_shared_mode(),
+                disabled_reason: self
+                    .is_shared_mode()
+                    .then_some("Already sharing this session.".to_string()),
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Join shared session".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::JoinShareSession))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Stop sharing".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::StopShareSession))],
+                dismiss_on_select: true,
+                is_disabled: !self.is_shared_mode(),
+                disabled_reason: (!self.is_shared_mode())
+                    .then_some("Sharing is not enabled.".to_string()),
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Help / About sharing".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::OpenShareHelp))],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            view_id: Some(SHARE_SELECTION_VIEW_ID),
+            header: Box::new(self.share_status_header()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_share_help_popup(&mut self) {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Help / About sharing".bold()));
+        header.push(Line::from(
+            "Shared mode uses a shared thread in app-server.".dim(),
+        ));
+        header.push(Line::from(
+            "codex drive submits a turn to the thread, not to a specific TUI process.".dim(),
+        ));
+        header.push(Line::from(
+            "All attached TUI clients observe the same events and outputs.".dim(),
+        ));
+        header.push(Line::from(
+            "Only one active turn can run per shared thread.".dim(),
+        ));
+        header.push(Line::from(""));
+        header.push(Line::from("Drive usage example:"));
+        header.push(Line::from(
+            "codex drive --thread <thread_id> --prompt \"...\"".cyan(),
+        ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Sharing Help".to_string()),
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
+            items: vec![SelectionItem {
+                name: "Back".to_string(),
+                dismiss_on_select: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn start_share_session(&mut self) {
+        if self.is_shared_mode() {
+            self.add_info_message("This session is already shared.".to_string(), None);
+            return;
+        }
+
+        if self.shared_thread_id.is_none() {
+            self.shared_thread_id = self.thread_id;
+        }
+        self.request_redraw();
+    }
+
+    pub(crate) fn join_share_session(&mut self) {
+        self.add_info_message(
+            "Join shared session by thread id is planned for the next phase.".to_string(),
+            Some("Phase 1 only provides shared-mode UX shell.".to_string()),
+        );
+    }
+
+    pub(crate) fn stop_share_session(&mut self) {
+        if !self.is_shared_mode() {
+            self.add_info_message("Sharing is not enabled for this session.".to_string(), None);
+            return;
+        }
+        self.shared_thread_id = None;
+        self.request_redraw();
+    }
+
+    fn is_shared_mode(&self) -> bool {
+        self.shared_thread_id.is_some()
+    }
+
+    fn share_mode_label(&self) -> &'static str {
+        if self.is_shared_mode() {
+            "SHARED"
+        } else {
+            "LOCAL"
+        }
+    }
+
+    fn share_status_header(&self) -> ColumnRenderable<'static> {
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Share".bold()));
+        header.push(Line::from(format!("Mode: {}", self.share_mode_label())));
+        let thread = self
+            .shared_thread_id
+            .or(self.thread_id)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(not available yet)".to_string());
+        header.push(Line::from(format!("Thread: {thread}")));
+        header.push(Line::from("Server: local app-server (phase 2 wiring)"));
+        let turn_state = if self.bottom_pane.is_task_running() {
+            "running"
+        } else {
+            "idle"
+        };
+        header.push(Line::from(format!("Turn: {turn_state}")));
+        header
     }
 
     fn model_selection_actions(

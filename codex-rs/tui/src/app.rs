@@ -1991,6 +1991,18 @@ impl App {
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
             }
+            AppEvent::StartShareSession => {
+                self.chat_widget.start_share_session();
+            }
+            AppEvent::JoinShareSession => {
+                self.chat_widget.join_share_session();
+            }
+            AppEvent::StopShareSession => {
+                self.chat_widget.stop_share_session();
+            }
+            AppEvent::OpenShareHelp => {
+                self.chat_widget.open_share_help_popup();
+            }
             AppEvent::RefreshConnectors { force_refetch } => {
                 self.chat_widget.refresh_connectors(force_refetch);
             }
