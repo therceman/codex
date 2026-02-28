@@ -1702,6 +1702,7 @@ async fn make_chatwidget_manual(
         pending_status_indicator_restore: false,
         thread_id: None,
         shared_thread_id: None,
+        shared_server_endpoint: None,
         thread_name: None,
         forked_from: None,
         frame_requester: FrameRequester::test_dummy(),

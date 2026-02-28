@@ -11,6 +11,8 @@ services:
       - cargo-registry:/home/ubuntu/.cargo/registry
       - cargo-git:/home/ubuntu/.cargo/git
       - rustup-home:/home/ubuntu/.rustup
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["/bin/bash"]
 
 volumes:

@@ -600,6 +600,7 @@ pub(crate) struct ChatWidget {
     pending_status_indicator_restore: bool,
     thread_id: Option<ThreadId>,
     shared_thread_id: Option<ThreadId>,
+    shared_server_endpoint: Option<String>,
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
@@ -2850,6 +2851,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             shared_thread_id: None,
+            shared_server_endpoint: None,
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
@@ -3028,6 +3030,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             shared_thread_id: None,
+            shared_server_endpoint: None,
             thread_name: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
@@ -3195,6 +3198,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             shared_thread_id: None,
+            shared_server_endpoint: None,
             thread_name: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
@@ -5877,9 +5881,15 @@ impl ChatWidget {
     }
 
     fn share_server_endpoint(&self) -> Option<&str> {
-        self.session_network_proxy
-            .as_ref()
-            .map(|proxy| proxy.admin_addr.as_str())
+        self.shared_server_endpoint.as_deref().or_else(|| {
+            self.session_network_proxy
+                .as_ref()
+                .map(|proxy| proxy.admin_addr.as_str())
+        })
+    }
+
+    pub(crate) fn set_share_server_endpoint(&mut self, endpoint: Option<String>) {
+        self.shared_server_endpoint = endpoint;
     }
 
     fn model_selection_actions(

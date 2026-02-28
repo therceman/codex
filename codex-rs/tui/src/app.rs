@@ -91,12 +91,15 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::process::Child;
+use tokio::process::Command;
 use tokio::select;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
@@ -117,6 +120,7 @@ const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 /// Smooth-mode streaming drains one line per tick, so this interval controls
 /// perceived typing speed for non-backlogged output.
 const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
+const DEFAULT_SHARE_SERVER_ENDPOINT: &str = "ws://127.0.0.1:4521";
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -623,6 +627,8 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     primary_session_configured: Option<SessionConfiguredEvent>,
     pending_primary_events: VecDeque<Event>,
+    share_server_endpoint: Option<String>,
+    share_server_child: Option<Child>,
 }
 
 #[derive(Default)]
@@ -710,6 +716,37 @@ impl App {
                 "Failed to carry forward sandbox policy override: {err}"
             ));
         }
+    }
+
+    fn configured_share_server_endpoint(&self) -> String {
+        std::env::var("CODEX_SHARE_SERVER_ENDPOINT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_SHARE_SERVER_ENDPOINT.to_string())
+    }
+
+    async fn ensure_share_server_running(&mut self) -> Result<String> {
+        if let Some(endpoint) = self.share_server_endpoint.clone() {
+            return Ok(endpoint);
+        }
+
+        let endpoint = self.configured_share_server_endpoint();
+        let executable =
+            std::env::current_exe().wrap_err("failed to resolve codex executable path")?;
+        let mut command = Command::new(executable);
+        command
+            .arg("app-server")
+            .arg("--listen")
+            .arg(&endpoint)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null());
+        let child = command
+            .spawn()
+            .wrap_err_with(|| format!("failed to start app-server on {endpoint}"))?;
+        self.share_server_child = Some(child);
+        self.share_server_endpoint = Some(endpoint.clone());
+        Ok(endpoint)
     }
 
     fn open_url_in_browser(&mut self, url: String) {
@@ -1529,6 +1566,8 @@ impl App {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            share_server_endpoint: None,
+            share_server_child: None,
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -1991,14 +2030,23 @@ impl App {
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
             }
-            AppEvent::StartShareSession => {
-                self.chat_widget.start_share_session();
-            }
+            AppEvent::StartShareSession => match self.ensure_share_server_running().await {
+                Ok(endpoint) => {
+                    self.chat_widget.set_share_server_endpoint(Some(endpoint));
+                    self.chat_widget.start_share_session();
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to start share server: {err}"));
+                }
+            },
             AppEvent::JoinShareSession => {
                 self.chat_widget.open_join_share_prompt();
             }
             AppEvent::JoinShareSessionById(thread_id) => {
                 self.select_agent_thread(tui, thread_id).await?;
+                self.chat_widget
+                    .set_share_server_endpoint(self.share_server_endpoint.clone());
                 self.chat_widget.start_share_session();
             }
             AppEvent::StopShareSession => {
@@ -3986,6 +4034,8 @@ mod tests {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            share_server_endpoint: None,
+            share_server_child: None,
         }
     }
 
@@ -4045,6 +4095,8 @@ mod tests {
                 primary_thread_id: None,
                 primary_session_configured: None,
                 pending_primary_events: VecDeque::new(),
+                share_server_endpoint: None,
+                share_server_child: None,
             },
             rx,
             op_rx,
