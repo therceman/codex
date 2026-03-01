@@ -5784,25 +5784,23 @@ impl ChatWidget {
         });
     }
 
-    pub(crate) fn start_share_session(&mut self) {
-        if self.is_shared_mode() {
-            self.add_info_message("This session is already shared.".to_string(), None);
-            return;
-        }
-
-        let Some(thread_id) = self.thread_id else {
-            self.add_error_message(
-                "Cannot start sharing before session initialization is complete.".to_string(),
-            );
-            return;
-        };
-        if self.shared_thread_id.is_none() {
-            self.shared_thread_id = Some(thread_id);
-        }
+    pub(crate) fn start_share_session_with_thread(&mut self, thread_id: ThreadId) {
+        self.shared_thread_id = Some(thread_id);
         let message = if let Some(endpoint) = self.share_server_endpoint() {
             format!("Sharing started on {endpoint} (thread {thread_id}).")
         } else {
             format!("Sharing started for thread {thread_id}.")
+        };
+        self.add_info_message(message, None);
+        self.request_redraw();
+    }
+
+    pub(crate) fn join_share_session_with_thread(&mut self, thread_id: ThreadId) {
+        self.shared_thread_id = Some(thread_id);
+        let message = if let Some(endpoint) = self.share_server_endpoint() {
+            format!("Joined shared session {thread_id} on {endpoint}.")
+        } else {
+            format!("Joined shared session {thread_id}.")
         };
         self.add_info_message(message, None);
         self.request_redraw();

@@ -85,6 +85,11 @@ impl ChatWidget {
         &self,
         event: &UserMessageEvent,
     ) -> bool {
+        if self.is_shared_mode() {
+            // Shared-mode prompts may legitimately repeat exact same text across turns.
+            // Do not apply realtime duplicate suppression there.
+            return true;
+        }
         if !self.realtime_conversation.is_live() {
             return false;
         }

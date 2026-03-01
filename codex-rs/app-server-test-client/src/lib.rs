@@ -71,6 +71,7 @@ use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -104,6 +105,7 @@ const NOTIFICATIONS_TO_OPT_OUT: &[&str] = &[
     "item/reasoning/summaryTextDelta",
     "item/reasoning/textDelta",
 ];
+const SHARE_DEBUG_LOG_ENV: &str = "CODEX_SHARE_DEBUG_LOG";
 
 /// Minimal launcher that initializes the Codex app-server and logs the handshake.
 #[derive(Parser)]
@@ -524,6 +526,95 @@ pub fn send_message_v2(
         true,
         dynamic_tools,
     )
+}
+
+pub fn post_message_v2_ws(server_url: &str, thread_id: String, user_message: String) -> Result<()> {
+    let mut session = ShareSessionWs::connect(server_url)?;
+    session.resume_thread(thread_id.clone())?;
+    let turn_response = session.client.turn_start(TurnStartParams {
+        thread_id: thread_id.clone(),
+        input: vec![V2UserInput::Text {
+            text: user_message,
+            text_elements: Vec::new(),
+        }],
+        ..Default::default()
+    })?;
+    println!(
+        "Share post: OK (thread {thread_id}, turn {})",
+        turn_response.turn.id
+    );
+    Ok(())
+}
+
+pub struct ShareSessionWs {
+    client: CodexClient,
+}
+
+impl ShareSessionWs {
+    pub fn connect(server_url: &str) -> Result<Self> {
+        let mut client = CodexClient::connect_websocket_share_quiet(server_url)?;
+        let _initialize = client.initialize()?;
+        Ok(Self { client })
+    }
+
+    pub fn start_thread(&mut self) -> Result<String> {
+        let response = self.client.thread_start(ThreadStartParams::default())?;
+        Ok(response.thread.id)
+    }
+
+    pub fn resume_thread(&mut self, thread_id: String) -> Result<()> {
+        let _ = self.client.thread_resume(ThreadResumeParams {
+            thread_id,
+            ..Default::default()
+        })?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexEventNotificationParams {
+    id: String,
+    msg: EventMsg,
+}
+
+pub fn stream_codex_events_for_thread_ws<F>(
+    server_url: &str,
+    thread_id: String,
+    mut on_event: F,
+) -> Result<()>
+where
+    F: FnMut(Event),
+{
+    let mut session = ShareSessionWs::connect(server_url)?;
+    session.resume_thread(thread_id)?;
+
+    loop {
+        let message = session.client.read_jsonrpc_message()?;
+        let JSONRPCMessage::Notification(notification) = message else {
+            continue;
+        };
+        if !notification.method.starts_with("codex/event/") {
+            continue;
+        }
+        let Some(notification_params) = notification.params else {
+            continue;
+        };
+        let params = serde_json::from_value::<CodexEventNotificationParams>(notification_params)?;
+        on_event(Event {
+            id: params.id,
+            msg: params.msg,
+        });
+    }
+}
+
+pub fn start_thread_v2_ws(server_url: &str) -> Result<String> {
+    let mut session = ShareSessionWs::connect(server_url)?;
+    session.start_thread()
+}
+
+pub fn ensure_thread_v2_ws(server_url: &str, thread_id: String) -> Result<()> {
+    let mut session = ShareSessionWs::connect(server_url)?;
+    session.resume_thread(thread_id)
 }
 
 fn send_message_v2_endpoint(
@@ -969,6 +1060,8 @@ enum ClientTransport {
 struct CodexClient {
     transport: ClientTransport,
     pending_notifications: VecDeque<JSONRPCNotification>,
+    share_trace_stdout: bool,
+    share_debug_log: Option<std::fs::File>,
     command_approval_behavior: CommandApprovalBehavior,
     command_approval_count: usize,
     command_approval_item_ids: Vec<String>,
@@ -987,6 +1080,29 @@ impl CodexClient {
         match endpoint {
             Endpoint::SpawnCodex(codex_bin) => Self::spawn_stdio(codex_bin, config_overrides),
             Endpoint::ConnectWs(url) => Self::connect_websocket(url),
+        }
+    }
+
+    fn connect_websocket_share_quiet(url: &str) -> Result<Self> {
+        let mut client = Self::connect_websocket(url)?;
+        client.share_trace_stdout = false;
+        client.share_debug_log = Self::open_share_debug_log_file();
+        Ok(client)
+    }
+
+    fn open_share_debug_log_file() -> Option<std::fs::File> {
+        let path = std::env::var(SHARE_DEBUG_LOG_ENV).ok()?;
+        OpenOptions::new().create(true).append(true).open(path).ok()
+    }
+
+    fn emit_share_trace_lines(&mut self, prefix: &str, payload: &str) {
+        if self.share_trace_stdout {
+            print_multiline_with_prefix(prefix, payload);
+        }
+        if let Some(file) = self.share_debug_log.as_mut() {
+            for line in payload.lines() {
+                let _ = writeln!(file, "{prefix}{line}");
+            }
         }
     }
 
@@ -1028,6 +1144,8 @@ impl CodexClient {
                 stdout: BufReader::new(stdout),
             },
             pending_notifications: VecDeque::new(),
+            share_trace_stdout: true,
+            share_debug_log: None,
             command_approval_behavior: CommandApprovalBehavior::AlwaysAccept,
             command_approval_count: 0,
             command_approval_item_ids: Vec::new(),
@@ -1049,6 +1167,8 @@ impl CodexClient {
                 socket: Box::new(socket),
             },
             pending_notifications: VecDeque::new(),
+            share_trace_stdout: true,
+            share_debug_log: None,
             command_approval_behavior: CommandApprovalBehavior::AlwaysAccept,
             command_approval_count: 0,
             command_approval_item_ids: Vec::new(),
@@ -1421,7 +1541,7 @@ impl CodexClient {
     fn write_request(&mut self, request: &ClientRequest) -> Result<()> {
         let request_json = serde_json::to_string(request)?;
         let request_pretty = serde_json::to_string_pretty(request)?;
-        print_multiline_with_prefix("> ", &request_pretty);
+        self.emit_share_trace_lines("> ", &request_pretty);
         self.write_payload(&request_json)
     }
 
@@ -1486,7 +1606,7 @@ impl CodexClient {
             let parsed: Value =
                 serde_json::from_str(trimmed).context("response was not valid JSON-RPC")?;
             let pretty = serde_json::to_string_pretty(&parsed)?;
-            print_multiline_with_prefix("< ", &pretty);
+            self.emit_share_trace_lines("< ", &pretty);
             let message: JSONRPCMessage = serde_json::from_value(parsed)
                 .context("response was not a valid JSON-RPC message")?;
             return Ok(message);
@@ -1636,7 +1756,7 @@ impl CodexClient {
     fn write_jsonrpc_message(&mut self, message: JSONRPCMessage) -> Result<()> {
         let payload = serde_json::to_string(&message)?;
         let pretty = serde_json::to_string_pretty(&message)?;
-        print_multiline_with_prefix("> ", &pretty);
+        self.emit_share_trace_lines("> ", &pretty);
         self.write_payload(&payload)
     }
 

@@ -5,10 +5,17 @@ DOCKER_COMPOSE ?= docker compose
 DOCKER_SERVICE ?= codex-dev
 COMPOSE_BAKE ?= true
 RUN_DIR ?= /workspace/codex/.cache/codex-playground
+ARGS ?=
+SHARE_DEBUG_LOG ?= /workspace/codex/.cache/share_debug.log
+APP_SERVER_LISTEN ?= ws://0.0.0.0:4521
+APP_SERVER_URL ?= ws://127.0.0.1:4521
+APP_SERVER_LOG ?= /workspace/codex/.cache/app-server.log
+THREAD_ID ?=
+PROMPT ?= hello from share post
 DOCKER_EXEC ?= $(DOCKER_COMPOSE) exec -T $(DOCKER_SERVICE)
 DOCKER_EXEC_INTERACTIVE ?= $(DOCKER_COMPOSE) exec $(DOCKER_SERVICE)
 
-.PHONY: help up down restart setup format test test_cli test_tui build run run_no_build test_and_run shell
+.PHONY: help up down restart setup format test test_cli test_tui build run run_no_build run_app_server share_post test_and_run shell
 .SILENT:
 
 help:
@@ -22,8 +29,10 @@ help:
 	@echo "  make test_tui        Run codex-tui tests in Docker"
 	@echo "  make test            Run full test suite (codex-cli + codex-tui) in Docker"
 	@echo "  make build           Build Codex in Docker (no host export)"
-	@echo "  make run             Build (incremental), then run Codex in Docker"
-	@echo "  make run_no_build    Run Codex in Docker without building"
+	@echo "  make run             Build (incremental), then run Codex in Docker (supports ARGS='...')"
+	@echo "  make run_no_build    Run Codex in Docker without building (supports ARGS='...')"
+	@echo "  make run_app_server  Run app-server in foreground for debug only (APP_SERVER_LISTEN=...)"
+	@echo "  make share_post      Send prompt to shared thread (THREAD_ID=... PROMPT=... APP_SERVER_URL=...)"
 	@echo "  make test_and_run    Test, then build and run Codex (supports RUN_DIR='...')"
 	@echo "  make shell           Open interactive shell in Docker dev container"
 
@@ -155,11 +164,22 @@ run:
 	secs=$$(awk "BEGIN { printf \"%.2f\", $$end_s-$$start_s }"); \
 	echo "Run prep: OK ($${secs}s)"; \
 	rm -f $$tmp; \
-	$(DOCKER_EXEC_INTERACTIVE) /bin/bash -lc "set -euo pipefail; mkdir -p '$(RUN_DIR)'; cd '$(RUN_DIR)'; /workspace/codex/codex-rs/target/debug/codex"
+	$(DOCKER_EXEC_INTERACTIVE) /bin/bash -lc "set -euo pipefail; mkdir -p '$(RUN_DIR)'; mkdir -p \"$$(dirname '$(SHARE_DEBUG_LOG)')\"; cd '$(RUN_DIR)'; CODEX_SHARE_DEBUG_LOG='$(SHARE_DEBUG_LOG)' /workspace/codex/codex-rs/target/debug/codex $(ARGS)"
 
 run_no_build:
 	$(DOCKER_COMPOSE) up -d $(DOCKER_SERVICE) >/dev/null 2>&1
-	$(DOCKER_EXEC_INTERACTIVE) /bin/bash -lc "set -euo pipefail; mkdir -p '$(RUN_DIR)'; cd '$(RUN_DIR)'; /workspace/codex/codex-rs/target/debug/codex"
+	$(DOCKER_EXEC_INTERACTIVE) /bin/bash -lc "set -euo pipefail; mkdir -p '$(RUN_DIR)'; mkdir -p \"$$(dirname '$(SHARE_DEBUG_LOG)')\"; cd '$(RUN_DIR)'; CODEX_SHARE_DEBUG_LOG='$(SHARE_DEBUG_LOG)' /workspace/codex/codex-rs/target/debug/codex $(ARGS)"
+
+run_app_server: build
+	$(DOCKER_COMPOSE) up -d $(DOCKER_SERVICE) >/dev/null 2>&1
+	$(DOCKER_EXEC_INTERACTIVE) /bin/bash -lc "set -euo pipefail; /workspace/codex/codex-rs/target/debug/codex app-server --listen '$(APP_SERVER_LISTEN)'"
+
+share_post:
+	if [ -z "$(THREAD_ID)" ]; then \
+		echo "Error: THREAD_ID is required. Usage: make share_post THREAD_ID=<id> PROMPT='...'" ; \
+		exit 1; \
+	fi
+	$(MAKE) run_no_build ARGS="share post --server $(APP_SERVER_URL) --thread $(THREAD_ID) --prompt '$(PROMPT)'"
 
 test_and_run: test
 	$(MAKE) run RUN_DIR='$(RUN_DIR)'

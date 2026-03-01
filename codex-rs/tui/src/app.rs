@@ -38,6 +38,7 @@ use crate::update_action::UpdateAction;
 use crate::version::CODEX_CLI_VERSION;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_protocol::ConfigLayerSource;
+use codex_app_server_test_client::ShareSessionWs;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
@@ -120,7 +121,9 @@ const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 /// Smooth-mode streaming drains one line per tick, so this interval controls
 /// perceived typing speed for non-backlogged output.
 const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
-const DEFAULT_SHARE_SERVER_ENDPOINT: &str = "ws://0.0.0.0:4521";
+const DEFAULT_SHARE_SERVER_LISTEN_ENDPOINT: &str = "ws://0.0.0.0:4521";
+const SHARE_SERVER_READY_RETRIES: usize = 20;
+const SHARE_SERVER_READY_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -629,6 +632,8 @@ pub(crate) struct App {
     pending_primary_events: VecDeque<Event>,
     share_server_endpoint: Option<String>,
     share_server_child: Option<Child>,
+    share_server_session: Option<ShareSessionWs>,
+    share_event_bridge_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Default)]
@@ -718,11 +723,18 @@ impl App {
         }
     }
 
-    fn configured_share_server_endpoint(&self) -> String {
+    fn configured_share_server_listen_endpoint(&self) -> String {
         std::env::var("CODEX_SHARE_SERVER_ENDPOINT")
             .ok()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_SHARE_SERVER_ENDPOINT.to_string())
+            .unwrap_or_else(|| DEFAULT_SHARE_SERVER_LISTEN_ENDPOINT.to_string())
+    }
+
+    fn share_server_client_endpoint(listen_endpoint: &str) -> String {
+        if let Some(rest) = listen_endpoint.strip_prefix("ws://0.0.0.0:") {
+            return format!("ws://127.0.0.1:{rest}");
+        }
+        listen_endpoint.to_string()
     }
 
     async fn ensure_share_server_running(&mut self) -> Result<String> {
@@ -730,7 +742,7 @@ impl App {
             return Ok(endpoint);
         }
 
-        let endpoint = self.configured_share_server_endpoint();
+        let endpoint = self.configured_share_server_listen_endpoint();
         let executable =
             std::env::current_exe().wrap_err("failed to resolve codex executable path")?;
         let mut command = Command::new(executable);
@@ -745,8 +757,83 @@ impl App {
             .spawn()
             .wrap_err_with(|| format!("failed to start app-server on {endpoint}"))?;
         self.share_server_child = Some(child);
-        self.share_server_endpoint = Some(endpoint.clone());
-        Ok(endpoint)
+        let client_endpoint = Self::share_server_client_endpoint(&endpoint);
+        self.share_server_endpoint = Some(client_endpoint.clone());
+        Ok(client_endpoint)
+    }
+
+    fn ensure_share_server_session(&mut self, endpoint: &str) -> Result<()> {
+        if self.share_server_session.is_some() {
+            return Ok(());
+        }
+
+        let mut last_err = None;
+        for attempt in 0..SHARE_SERVER_READY_RETRIES {
+            match ShareSessionWs::connect(endpoint) {
+                Ok(session) => {
+                    self.share_server_session = Some(session);
+                    return Ok(());
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt + 1 < SHARE_SERVER_READY_RETRIES {
+                        std::thread::sleep(SHARE_SERVER_READY_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+        let err = last_err.expect("retry loop should capture at least one error");
+        Err(color_eyre::eyre::eyre!("{err}"))
+            .wrap_err_with(|| format!("failed to connect to app-server at {endpoint}"))
+    }
+
+    fn ensure_shared_thread_exists(&mut self, endpoint: &str, thread_id: ThreadId) -> Result<()> {
+        let mut last_err = None;
+        for attempt in 0..SHARE_SERVER_READY_RETRIES {
+            self.ensure_share_server_session(endpoint)?;
+            let session = self
+                .share_server_session
+                .as_mut()
+                .expect("share session should be present");
+            match session.resume_thread(thread_id.to_string()) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_err = Some(err);
+                    self.share_server_session = None;
+                    if attempt + 1 < SHARE_SERVER_READY_RETRIES {
+                        std::thread::sleep(SHARE_SERVER_READY_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+        let err = last_err.expect("retry loop should capture at least one error");
+        Err(color_eyre::eyre::eyre!("{err}"))
+            .wrap_err_with(|| format!("failed to resume shared thread {thread_id} on {endpoint}"))
+    }
+
+    fn stop_share_event_bridge(&mut self) {
+        if let Some(task) = self.share_event_bridge_task.take() {
+            task.abort();
+        }
+    }
+
+    fn start_share_event_bridge(&mut self, endpoint: String, thread_id: ThreadId) {
+        self.stop_share_event_bridge();
+        let app_event_tx = self.app_event_tx.clone();
+        self.share_event_bridge_task = Some(tokio::task::spawn_blocking(move || {
+            let stream_result = codex_app_server_test_client::stream_codex_events_for_thread_ws(
+                &endpoint,
+                thread_id.to_string(),
+                |event| app_event_tx.send(AppEvent::CodexEvent(event)),
+            );
+            if let Err(err) = stream_result {
+                app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    history_cell::new_error_event(format!(
+                        "Shared event bridge stopped for thread {thread_id}: {err}"
+                    )),
+                )));
+            }
+        }));
     }
 
     fn open_url_in_browser(&mut self, url: String) {
@@ -1568,6 +1655,8 @@ impl App {
             pending_primary_events: VecDeque::new(),
             share_server_endpoint: None,
             share_server_child: None,
+            share_server_session: None,
+            share_event_bridge_task: None,
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -2032,8 +2121,48 @@ impl App {
             }
             AppEvent::StartShareSession => match self.ensure_share_server_running().await {
                 Ok(endpoint) => {
-                    self.chat_widget.set_share_server_endpoint(Some(endpoint));
-                    self.chat_widget.start_share_session();
+                    self.chat_widget
+                        .set_share_server_endpoint(Some(endpoint.clone()));
+                    let Some(thread_id) = self.active_thread_id else {
+                        self.chat_widget.add_error_message(
+                            "Cannot start sharing: there is no active TUI thread.".to_string(),
+                        );
+                        return Ok(AppRunControl::Continue);
+                    };
+                    match self.chat_widget.rollout_path() {
+                        Some(path) if path.exists() => {}
+                        Some(path) => {
+                            self.chat_widget.add_error_message(format!(
+                                "Cannot share active thread {thread_id} yet: rollout is not materialized at {}. Complete at least one turn, then run /share again.",
+                                path.display()
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        None => {
+                            self.chat_widget.add_error_message(format!(
+                                "Cannot share active thread {thread_id} yet: rollout path is not available. Complete at least one turn, then run /share again."
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                    }
+                    match self.ensure_shared_thread_exists(&endpoint, thread_id) {
+                        Ok(()) => {
+                            self.start_share_event_bridge(endpoint.clone(), thread_id);
+                            self.chat_widget.start_share_session_with_thread(thread_id);
+                        }
+                        Err(err) => {
+                            let err_text = err.to_string();
+                            if err_text.contains("no rollout found for thread id") {
+                                self.chat_widget.add_error_message(format!(
+                                    "Cannot share active thread {thread_id} yet: app-server cannot find a persisted rollout. Complete at least one turn in this session, then run /share again."
+                                ));
+                            } else {
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to share active thread {thread_id} on app-server: {err}"
+                                ));
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     self.chat_widget
@@ -2044,12 +2173,29 @@ impl App {
                 self.chat_widget.open_join_share_prompt();
             }
             AppEvent::JoinShareSessionById(thread_id) => {
-                self.select_agent_thread(tui, thread_id).await?;
-                self.chat_widget
-                    .set_share_server_endpoint(self.share_server_endpoint.clone());
-                self.chat_widget.start_share_session();
+                match self.ensure_share_server_running().await {
+                    Ok(endpoint) => {
+                        self.chat_widget
+                            .set_share_server_endpoint(Some(endpoint.clone()));
+                        match self.ensure_shared_thread_exists(&endpoint, thread_id) {
+                            Ok(()) => {
+                                self.start_share_event_bridge(endpoint.clone(), thread_id);
+                                self.chat_widget.join_share_session_with_thread(thread_id);
+                            }
+                            Err(err) => self.chat_widget.add_error_message(format!(
+                                "Failed to join shared session {thread_id}: {err}"
+                            )),
+                        }
+                    }
+                    Err(err) => {
+                        self.chat_widget
+                            .add_error_message(format!("Failed to start share server: {err}"));
+                    }
+                }
             }
             AppEvent::StopShareSession => {
+                self.stop_share_event_bridge();
+                self.share_server_session = None;
                 self.chat_widget.stop_share_session();
             }
             AppEvent::OpenShareHelp => {
@@ -4036,6 +4182,8 @@ mod tests {
             pending_primary_events: VecDeque::new(),
             share_server_endpoint: None,
             share_server_child: None,
+            share_server_session: None,
+            share_event_bridge_task: None,
         }
     }
 
@@ -4097,6 +4245,8 @@ mod tests {
                 pending_primary_events: VecDeque::new(),
                 share_server_endpoint: None,
                 share_server_child: None,
+                share_server_session: None,
+                share_event_bridge_task: None,
             },
             rx,
             op_rx,

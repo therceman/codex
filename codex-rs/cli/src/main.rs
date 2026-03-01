@@ -103,6 +103,9 @@ enum Subcommand {
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
+    /// [experimental] Interact with shared sessions over app-server.
+    Share(ShareCommand),
+
     /// Launch the Codex desktop app (downloads the macOS installer if missing).
     #[cfg(target_os = "macos")]
     App(app_cmd::AppCommand),
@@ -333,6 +336,33 @@ struct AppServerCommand {
     /// See https://developers.openai.com/codex/config-advanced/#metrics for more details.
     #[arg(long = "analytics-default-enabled")]
     analytics_default_enabled: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ShareCommand {
+    #[command(subcommand)]
+    subcommand: ShareSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum ShareSubcommand {
+    /// Post a prompt to a shared thread and stream its turn output.
+    Post(SharePostCommand),
+}
+
+#[derive(Debug, Parser)]
+struct SharePostCommand {
+    /// app-server websocket endpoint (ws://IP:PORT).
+    #[arg(long = "server", default_value = "ws://127.0.0.1:4521")]
+    server: String,
+
+    /// Shared thread identifier.
+    #[arg(long = "thread", value_name = "THREAD_ID")]
+    thread: String,
+
+    /// Prompt text to submit.
+    #[arg(long = "prompt", value_name = "TEXT")]
+    prompt: String,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -622,6 +652,15 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 codex_app_server_protocol::generate_json_with_experimental(
                     &gen_cli.out_dir,
                     gen_cli.experimental,
+                )?;
+            }
+        },
+        Some(Subcommand::Share(ShareCommand { subcommand })) => match subcommand {
+            ShareSubcommand::Post(cmd) => {
+                codex_app_server_test_client::post_message_v2_ws(
+                    &cmd.server,
+                    cmd.thread,
+                    cmd.prompt,
                 )?;
             }
         },
@@ -1146,6 +1185,14 @@ mod tests {
         app_server
     }
 
+    fn share_from_args(args: &[&str]) -> ShareCommand {
+        let cli = MultitoolCli::try_parse_from(args).expect("parse");
+        let Subcommand::Share(share) = cli.subcommand.expect("share present") else {
+            unreachable!()
+        };
+        share
+    }
+
     fn sample_exit_info(conversation_id: Option<&str>, thread_name: Option<&str>) -> AppExitInfo {
         let token_usage = TokenUsage {
             output_tokens: 2,
@@ -1411,6 +1458,28 @@ mod tests {
         let parse_result =
             MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
         assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn share_post_args_parse() {
+        let share = share_from_args(
+            [
+                "codex",
+                "share",
+                "post",
+                "--server",
+                "ws://127.0.0.1:4521",
+                "--thread",
+                "019ca4c5-552e-7c30-bbd5-d4db8b43773b",
+                "--prompt",
+                "hello",
+            ]
+            .as_ref(),
+        );
+        let ShareSubcommand::Post(post) = share.subcommand;
+        assert_eq!(post.server, "ws://127.0.0.1:4521");
+        assert_eq!(post.thread, "019ca4c5-552e-7c30-bbd5-d4db8b43773b");
+        assert_eq!(post.prompt, "hello");
     }
 
     #[test]
